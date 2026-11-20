@@ -20,9 +20,11 @@ En este proyecto creé **4 "carpetas en la nube" (buckets S3)** usando código, 
 10. [Paso 7: desplegar los 4 buckets](#10-paso-7-desplegar-los-4-buckets)
 11. [Paso 8: borrar todo](#11-paso-8-borrar-todo)
 12. [Paso 9: guardar el state en S3 (state remoto)](#12-paso-9-guardar-el-state-en-s3-state-remoto)
-13. [Errores que tuve y cómo los resolví](#13-errores-que-tuve-y-cómo-los-resolví)
-14. [Comandos de memoria](#14-comandos-de-memoria)
-15. [Qué sigue](#15-qué-sigue)
+13. [Paso 10: subir mi código a GitHub](#13-paso-10-subir-mi-código-a-github)
+14. [Paso 11: ordenar los módulos por nube](#14-paso-11-ordenar-los-módulos-por-nube)
+15. [Errores que tuve y cómo los resolví](#15-errores-que-tuve-y-cómo-los-resolví)
+16. [Comandos de memoria](#16-comandos-de-memoria)
+17. [Qué sigue](#17-qué-sigue)
 
 ---
 
@@ -89,14 +91,15 @@ terraform-multicloud/
 ├── envs/                  ← los VALORES de cada ambiente
 │   ├── d.tfvars           ← valores de desarrollo
 │   └── d.backend.hcl      ← dónde se guarda el state en desarrollo
-├── modules/               ← las PLANTILLAS
-│   └── s3-bucket/         ← plantilla de "un bucket bien hecho"
+├── modules/               ← las PLANTILLAS, separadas por nube
+│   └── aws/
+│       └── s3-bucket/     ← plantilla de "un bucket bien hecho"
 ├── stacks/                ← lo que se DESPLIEGA
 │   └── aws/
 │       ├── 00-bootstrap/  ← crea el bucket del state (se corre una sola vez)
 │       └── 10-datalake/   ← usa la plantilla 4 veces (su state vive en S3)
-├── .gitignore         ← archivos que NO se suben a GitHub
-└── readme.md          ← este archivo
+├── .gitignore             ← archivos que NO se suben a GitHub
+└── readme.md              ← este archivo
 ```
 
 **Una analogía con una fábrica de galletas:**
@@ -108,6 +111,14 @@ terraform-multicloud/
 | `envs/` | El **sabor** de cada tanda | Los valores de desarrollo, certificación o producción |
 
 El molde se hace **una vez** y se usa muchas veces.
+
+**¿Por qué hay una carpeta `aws/` dentro de `modules/` y de `stacks/`?** Porque el proyecto va a crecer a **Azure** y **GCP**. Cada nube tiene sus propias plantillas y sus propios despliegues, y así no se mezclan:
+
+```
+modules/aws/s3-bucket/          stacks/aws/10-datalake/
+modules/azure/...   (futuro)    stacks/azure/...   (futuro)
+modules/gcp/...     (futuro)    stacks/gcp/...     (futuro)
+```
 
 **¿Por qué `10-datalake` tiene un número?** Indica el **orden**. Más adelante habrá `20-...`, `30-...`, y cada uno se despliega después del anterior porque lo necesita. Se numera de 10 en 10 para poder meter otro en medio (por ejemplo `15-...`) sin renombrar todo.
 
@@ -294,7 +305,7 @@ terraform state show <recurso>                # el detalle de uno
 
 Al principio todo estaba en un solo archivo. Lo separé así:
 
-### La plantilla: `modules/s3-bucket/`
+### La plantilla: `modules/aws/s3-bucket/`
 
 | Archivo | Para qué sirve |
 |---|---|
@@ -340,7 +351,7 @@ Si cambio el ambiente a `p`, los 4 nombres cambian solos a `...p01`.
 ### Cómo la plantilla se usa 4 veces (`for_each`)
 ```hcl
 module "buckets" {
-  source   = "../../../modules/s3-bucket"   # dónde está la plantilla
+  source   = "../../../modules/aws/s3-bucket"   # dónde está la plantilla
   for_each = local.buckets                  # repetir una vez por cada capa
 
   bucket_name = each.value                  # el nombre de esa capa
@@ -457,7 +468,7 @@ Tiene los mismos archivos que `10-datalake` (`versions.tf`, `providers.tf`, `var
 
 ```hcl
 module "state_bucket" {
-  source = "../../../modules/s3-bucket"
+  source = "../../../modules/aws/s3-bucket"
 
   bucket_name        = local.state_bucket_name   # s3use1labtfstated01
   versioning_enabled = true                      # obligatorio para un state
@@ -558,7 +569,168 @@ s3use1labtfstated01/
 
 ---
 
-## 13. Errores que tuve y cómo los resolví
+## 13. Paso 10: subir mi código a GitHub
+
+### ¿Por qué?
+
+Hasta aquí, mi código estaba **solo en mi PC**. Si se dañaba la laptop, lo perdía todo. En GitHub queda guardado en la nube, con el **historial de cada cambio**, y sirve como **portafolio**.
+
+### Dos palabras nuevas
+
+| Palabra | Qué significa, en simple |
+|---|---|
+| **Git** | Programa que guarda "fotos" de tu código a lo largo del tiempo. Funciona en tu PC |
+| **GitHub** | Página web donde subes esas fotos para guardarlas en la nube y compartirlas |
+| **Repositorio (repo)** | La carpeta del proyecto, controlada por Git |
+| **Commit** | Una "foto" del proyecto, con un mensaje que explica qué cambió |
+| **Push** | Subir tus commits de tu PC a GitHub |
+| **Rama (branch)** | Una línea de trabajo. La principal se llama `main` |
+
+### ¿Qué se sube y qué no?
+
+| Se sube a GitHub (el código) | NO se sube (lo bloquea el `.gitignore`) |
+|---|---|
+| Archivos `.tf` | `terraform.tfstate` (la memoria de Terraform, va en S3) |
+| `.terraform.lock.hcl` (versión exacta del provider) | `tfplan` (planes guardados) |
+| `envs/*.tfvars` y `envs/*.backend.hcl` | `.terraform/` (programas descargados) |
+| `readme.md`, `.gitignore` | `iac-admin_credentials.csv` (¡mi contraseña!) |
+
+> **Código en GitHub, memoria en S3, recursos en AWS.** Cada cosa en su lugar.
+
+### 10.1 Crear el repo en GitHub
+
+En GitHub: **`+` → New repository**:
+- **Nombre:** `terraform-multicloud`
+- **Visibility:** **Private** al principio (hasta revisar que no haya secretos).
+- **Add README / .gitignore / license:** **todo apagado**, porque ya los tengo en mi PC. Si los marco, GitHub crea archivos que chocan con los míos.
+
+### 10.2 Iniciar Git en mi carpeta
+
+```bash
+cd ~/Desktop/terraform-multicloud
+git init -b main          # empieza a controlar la carpeta con Git, rama "main"
+git status                # muestra qué archivos encontró
+```
+
+### 10.3 Revisar ANTES de subir (lo más importante)
+
+```bash
+git add .                 # prepara todos los archivos (respeta el .gitignore)
+git status                # ahora muestra cada archivo, en verde
+```
+
+Revisé la lista verde con cuidado:
+- ✅ Estaban los `.tf`, los dos `.terraform.lock.hcl`, `envs/` y el README (23 archivos).
+- ✅ **No** estaban `terraform.tfstate`, `tfplan`, `.terraform/` ni el CSV con la contraseña.
+
+> ⚠️ Si algo con secretos aparece en la lista, **no sigas**: agrégalo al `.gitignore` primero. Una vez subido a un repo público, hay que dar la contraseña por robada.
+
+### 10.4 Guardar la "foto" (commit)
+
+La primera vez en la PC hay que decirle a Git quién soy (mismo correo que GitHub, así los commits aparecen en mi perfil):
+
+```bash
+git config --global user.name "Jason Concepcion"
+git config --global user.email "mi-correo@ejemplo.com"
+```
+
+```bash
+git commit -m "feat: data lake en AWS con modulo s3-bucket y state remoto en S3"
+```
+
+**El prefijo del mensaje** sigue la convención **Conventional Commits**:
+
+| Prefijo | Cuándo lo uso |
+|---|---|
+| `feat:` | Agregué algo nuevo |
+| `fix:` | Arreglé un error |
+| `docs:` | Solo cambié documentación (como este README) |
+| `refactor:` | Reordené el código sin cambiar lo que hace |
+
+### 10.5 Conectar con GitHub y subir
+
+```bash
+git remote add origin https://github.com/jasonconcepcionb/terraform-multicloud.git
+git push -u origin main
+```
+
+- `remote add origin`: le dice a Git *"mi repo en la nube está en esta dirección"*. `origin` es el nombre por convención.
+- `push -u origin main`: sube la rama `main`. El `-u` la deja enlazada, así la próxima vez basta con `git push`.
+- La primera vez se abre una ventana para **iniciar sesión en GitHub desde el navegador**. No hay que pegar contraseñas ni tokens.
+
+Cuando confirmé que no había secretos, pasé el repo a **público** para mi portafolio.
+
+### Mi día a día con Git
+
+```bash
+git status                       # ¿qué cambió?
+git add .                        # preparar los cambios
+git commit -m "feat: ..."        # guardar la foto con un mensaje
+git push                         # subirla a GitHub
+```
+
+---
+
+## 14. Paso 11: ordenar los módulos por nube
+
+### ¿Por qué?
+
+Pensé en tener un repo para AWS y otro para Azure. Decidí **un solo repo** (se llama *monorepo*) porque:
+
+| Un solo repo (lo que elegí) | Un repo por nube |
+|---|---|
+| Muestra en un lugar que manejo **varias nubes** | Tres repos chicos y separados |
+| Una sola convención de nombres, un `.gitignore`, un README | Hay que repetir todo en cada repo |
+| Ideal para **una persona o un equipo chico** | Ideal para **empresas grandes** con un equipo por nube |
+
+Pero dentro del repo, cada nube necesita **su propia carpeta**. Por eso moví el módulo:
+
+```
+ANTES:  modules/s3-bucket/
+AHORA:  modules/aws/s3-bucket/
+```
+
+### Lo que hice
+
+1. Creé la carpeta `modules/aws/` y **arrastré** `s3-bucket/` adentro.
+2. Como la plantilla cambió de lugar, actualicé la **dirección** (`source`) en los dos stacks:
+
+```hcl
+# stacks/aws/00-bootstrap/main.tf  y  stacks/aws/10-datalake/main.tf
+source = "../../../modules/aws/s3-bucket"
+```
+
+3. Cuando cambia la ruta de un módulo, **hay que volver a hacer `init`**:
+
+```bash
+cd stacks/aws/10-datalake
+terraform init -backend-config="../../../envs/d.backend.hcl"
+terraform plan -var-file="../../../envs/d.tfvars"
+
+cd ../00-bootstrap
+terraform init
+terraform plan -var-file="../../../envs/d.tfvars"
+```
+
+4. En los dos `plan` salió **`No changes`**.
+
+> **¿Por qué `No changes` es la prueba de que todo salió bien?** Solo cambié **dónde está guardada** la plantilla, no **lo que crea**. Si el `plan` hubiera mostrado algo para destruir o reemplazar, habría significado que rompí algo. A esto se le llama **refactor**: reordenar sin cambiar el resultado.
+
+5. Lo subí a GitHub:
+
+```bash
+git add .
+git commit -m "refactor: mover modulo s3-bucket a modules/aws"
+git push
+```
+
+### Dato curioso: el candado
+
+En el `plan` de `10-datalake` apareció `Releasing state lock` y en el de `00-bootstrap` no. Es porque `10-datalake` guarda su state en S3 (usa el candado) y `00-bootstrap` todavía lo guarda en mi PC (no lo necesita).
+
+---
+
+## 15. Errores que tuve y cómo los resolví
 
 | Error | Qué pasó | Solución |
 |---|---|---|
@@ -572,11 +744,13 @@ s3use1labtfstated01/
 | Desaparecieron variables | Reemplacé todo el archivo en vez de agregar al final | Leer bien si dice "reemplaza" o "agrega" |
 | `ExpiredToken` | La sesión de `aws login` venció | Volver a correr `aws login --profile iac-admin` |
 | Pregunta "copy existing state to the new backend?" | No es un error: Terraform encontró un state local al configurar S3 | Responder `yes` para mudarlo al bucket |
+| `Unreadable module directory` (posible) | Moví el módulo de carpeta y el `source` seguía con la ruta vieja | Actualizar el `source` y volver a correr `terraform init` |
+| VS Code mostraba una versión vieja del README | El archivo cambió en el disco, pero el editor tenía abierta la copia anterior | `Ctrl + Shift + P` → `Revert File` (sin guardar la copia vieja) |
 | Conflicto de `packaging` en pip | Dos herramientas de Python pedían versiones distintas | Usar un **entorno virtual** por proyecto (`python -m venv .venv`) |
 
 ---
 
-## 14. Comandos de memoria
+## 16. Comandos de memoria
 
 | Quiero… | Comando |
 |---|---|
@@ -592,10 +766,15 @@ s3use1labtfstated01/
 | Crear | `terraform apply` |
 | Ver lo que Terraform administra | `terraform state list` |
 | Borrar todo | `terraform destroy -var-file="../../../envs/d.tfvars"` |
+| Ver qué cambió en mi código | `git status` |
+| Preparar los cambios | `git add .` |
+| Guardar una "foto" | `git commit -m "feat: ..."` |
+| Subir a GitHub | `git push` |
+| Ver el historial de commits | `git log --oneline` |
 
 ---
 
-## 15. Qué sigue
+## 17. Qué sigue
 
 | # | Tema | En simple | Estado |
 |---|---|---|---|
@@ -606,3 +785,7 @@ s3use1labtfstated01/
 | 5 | Procesamiento (Glue jobs, Lambda) | Programas que mueven y limpian los datos entre capas | ⏳ |
 | 6 | Consultas (Athena) | Hacer SQL sobre los datos | ⏳ |
 | 7 | Automatización (GitHub Actions) | Que el despliegue lo haga un robot en vez de mi PC | ⏳ |
+| 8 | Código en GitHub | Mi código guardado en la nube y en mi portafolio | ✅ Hecho |
+| 9 | Módulos ordenados por nube | `modules/aws/` listo para sumar Azure y GCP | ✅ Hecho |
+| 10 | State de `00-bootstrap` en S3 | Que no quede nada importante en mi PC | ⏳ |
+| 11 | Azure y GCP | El mismo data lake en las otras nubes | ⏳ |
