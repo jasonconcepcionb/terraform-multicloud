@@ -1,0 +1,11 @@
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+crash.log
+.env
+*csv
+*credentials*
+!envs/*.tfvars
+tfplan
+.venv/

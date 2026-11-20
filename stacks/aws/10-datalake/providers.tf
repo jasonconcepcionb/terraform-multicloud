@@ -1,0 +1,14 @@
+provider "aws" {
+  region  = var.region
+  profile = var.aws_profile
+
+  default_tags {
+    tags = {
+      Project     = var.project
+      Environment = var.environment
+      Owner       = var.owner
+      ManagedBy   = "terraform"
+      Stack       = "10-datalake"
+    }
+  }
+}
