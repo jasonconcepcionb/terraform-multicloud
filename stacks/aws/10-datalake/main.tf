@@ -1,5 +1,5 @@
 module "buckets" {
-  source   = "../../../modules/s3-bucket"
+  source   = "../../../modules/aws/s3-bucket"
   for_each = local.buckets
 
   bucket_name   = each.value
