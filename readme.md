@@ -43,6 +43,7 @@ En este proyecto creé **4 "carpetas en la nube" (buckets S3)** usando código, 
 | **Access key** | Una "llave" permanente para usar AWS sin contraseña. **No la usamos** (ver paso 3). |
 | **Perfil (profile)** | Un nombre para guardar una forma de conectarse a AWS. El mío se llama `iac-admin`. |
 | **Región** | El lugar del mundo donde AWS guarda tus cosas. Uso `us-east-1` (Virginia, EE. UU.). |
+| **Versionado** | Cuando está activo, S3 **nunca borra de verdad** un archivo: guarda las versiones anteriores escondidas. Sirve para recuperar cosas, pero hace que un bucket "parezca vacío" sin estarlo (ver [Paso 8](#11-paso-8-borrar-todo)). |
 
 **La idea de Terraform en una frase:** *escribes en un archivo cómo quieres que quede tu nube, y Terraform se encarga de que quede así.*
 
@@ -419,17 +420,99 @@ terraform apply tfplan
 
 ## 11. Paso 8: borrar todo
 
+> ⚠️ **Lee esto primero: con el versionado, S3 no borra los archivos de verdad.**
+>
+> Si un bucket tiene **versionado activado**, cada vez que un archivo se sobrescribe o se elimina, S3 **guarda la versión anterior escondida**. El archivo desaparece de la lista, pero sigue ahí ocupando espacio.
+>
+> ```
+> terraform.tfstate
+> ├── versión actual      ← la que ves en la lista
+> ├── versión anterior    ← escondida (de un apply anterior)
+> ├── versión anterior    ← escondida
+> └── ...
+> ```
+>
+> Por eso un bucket puede **verse vacío y no estarlo**. Para verlas: entra al bucket y activa **Show versions**.
+>
+> - Si borras un archivo a mano, S3 no lo elimina: le pone una **marca de borrado** (*delete marker*) y guarda todas sus versiones.
+> - El botón **Empty** de la consola borra **todo**: archivos, versiones anteriores y marcas de borrado.
+>
+> Esto es justamente lo que permite **recuperar un state dañado**: se vuelve a una de esas versiones escondidas.
+
+### ¿Cuándo `destroy` borra un bucket con archivos?
+
+Depende del ajuste **`force_destroy`** de cada bucket:
+
+| Bucket | `force_destroy` | Si tiene archivos y hago `destroy`… |
+|---|---|---|
+| Data lake en **desarrollo** (`...d01`) | `true` | ✅ Lo borra igual, con archivos y versiones |
+| Data lake en **certificación y producción** (`...c01`, `...p01`) | `false` | ❌ No lo borra: error `BucketNotEmpty` |
+| Bucket del **state** (`s3use1labtfstated01`) | `false` (siempre) | ❌ No lo borra: error `BucketNotEmpty` |
+
+Es **a propósito**: en desarrollo quiero limpiar rápido; en producción y en el state, nadie debe poder borrar datos reales con un solo comando, ni siquiera por error.
+
+### Borrar solo el data lake (lo normal al terminar el día)
+
 ```bash
 cd stacks/aws/10-datalake
-terraform plan -destroy -var-file="../../../envs/d.tfvars"   # ver qué se borra
-terraform destroy -var-file="../../../envs/d.tfvars"         # borrar (escribir yes)
+export AWS_PROFILE=iac-admin
+terraform plan -destroy -var-file="../../../envs/d.tfvars"   # revisar: 24 to destroy
+terraform destroy -var-file="../../../envs/d.tfvars"         # escribir yes
 ```
 
-El código queda intacto. Si corro `apply` otra vez, todo vuelve a aparecer igual.
+> 💰 Un bucket vacío (o con un state de pocos KB) cuesta prácticamente **$0**, así que el bucket del state se puede dejar creado.
 
-> **Lo que se crea con Terraform se borra con Terraform**, no desde la consola de AWS ni borrando carpetas.
+### Borrar TODO, incluido el bucket del state
 
-> **Orden para borrar todo:** primero `10-datalake` y al final `00-bootstrap`, al revés de como se crean. Si borras primero el bucket del state, `10-datalake` pierde su memoria. Además, como el bucket del state tiene versionado y `force_destroy = false`, antes de destruirlo hay que vaciarlo (incluidas las versiones anteriores).
+El orden es **al revés de como se crearon**: primero el data lake y al final la caja fuerte del state.
+
+**1. Destruir el data lake**
+```bash
+cd stacks/aws/10-datalake
+terraform destroy -var-file="../../../envs/d.tfvars"          # 24 destroyed
+```
+
+**2. Vaciar el bucket del state (en la consola de AWS)**
+1. **S3** → marcar `s3use1labtfstated01`.
+2. Botón **Empty**.
+3. Escribir `permanently delete` → **Empty**.
+
+> Si te saltas este paso, el `destroy` falla con:
+> ```
+> Error: deleting S3 Bucket (s3use1labtfstated01): BucketNotEmpty:
+> The bucket you tried to delete is not empty. You must delete all versions in the bucket.
+> ```
+> No es que algo esté mal: es la protección funcionando. Terraform ya borró las otras piezas y **solo quedó el bucket**. Vacíalo y vuelve a correr el `destroy`.
+
+**3. Destruir el bucket del state**
+```bash
+cd ../00-bootstrap
+terraform destroy -var-file="../../../envs/d.tfvars"           # 6 destroyed (o 1 si ya se borraron las otras piezas)
+```
+
+En S3 no debe quedar ningún bucket.
+
+### Volver a crear todo (al día siguiente)
+
+```bash
+# 1. Primero la caja fuerte del state
+cd stacks/aws/00-bootstrap
+aws login --profile iac-admin
+export AWS_PROFILE=iac-admin
+terraform apply -var-file="../../../envs/d.tfvars"
+
+# 2. Después el data lake
+cd ../10-datalake
+terraform init -backend-config="../../../envs/d.backend.hcl" -reconfigure
+terraform plan -var-file="../../../envs/d.tfvars" -out=tfplan
+terraform apply tfplan
+```
+
+> El código queda intacto en GitHub y en mi PC. Por eso puedo borrar todo sin miedo y recrearlo en minutos.
+
+> **Lo que se crea con Terraform se borra con Terraform**, no desde la consola de AWS ni borrando carpetas. La única excepción es el botón **Empty** para vaciar un bucket protegido antes del `destroy`.
+
+> 💡 **Para no llevarme sorpresas en la factura:** Billing → Budgets → Create budget → **Zero spend budget**. AWS me manda un correo apenas algo genere costo, aunque sea $0.01.
 
 ---
 
@@ -744,6 +827,7 @@ En el `plan` de `10-datalake` apareció `Releasing state lock` y en el de `00-bo
 | Desaparecieron variables | Reemplacé todo el archivo en vez de agregar al final | Leer bien si dice "reemplaza" o "agrega" |
 | `ExpiredToken` | La sesión de `aws login` venció | Volver a correr `aws login --profile iac-admin` |
 | Pregunta "copy existing state to the new backend?" | No es un error: Terraform encontró un state local al configurar S3 | Responder `yes` para mudarlo al bucket |
+| `BucketNotEmpty` al destruir el bucket del state | Tiene versionado y `force_destroy = false`: guarda versiones escondidas del state | Consola → S3 → **Empty** → `permanently delete`, y repetir el `destroy` |
 | `Unreadable module directory` (posible) | Moví el módulo de carpeta y el `source` seguía con la ruta vieja | Actualizar el `source` y volver a correr `terraform init` |
 | VS Code mostraba una versión vieja del README | El archivo cambió en el disco, pero el editor tenía abierta la copia anterior | `Ctrl + Shift + P` → `Revert File` (sin guardar la copia vieja) |
 | Conflicto de `packaging` en pip | Dos herramientas de Python pedían versiones distintas | Usar un **entorno virtual** por proyecto (`python -m venv .venv`) |
